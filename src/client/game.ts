@@ -24,6 +24,16 @@ type Camera = { pos: Vec2; zoom: number };
 
 type Skid = { a: Vec2; b: Vec2; life: number; color: string; w: number };
 
+type Smoke = { pos: Vec2; vel: Vec2; life: number; maxLife: number; size: number };
+
+type Rocket = {
+  pos: Vec2;
+  vel: Vec2;
+  ownerId: string;
+  life: number;
+  radius: number;
+};
+
 export class Game {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -33,6 +43,7 @@ export class Game {
   private readonly flagIcons = new FlagIconCache();
 
   private phase: Phase = "menu";
+  private paused = false;
 
   private track: Track;
   private trackQ: TrackQuery;
@@ -45,9 +56,14 @@ export class Game {
 
   private decor: Decor[] = [];
   private skids: Skid[] = [];
+  private smoke: Smoke[] = [];
+  private rockets: Rocket[] = [];
 
   private startMs = 0;
   private lastFrameMs = 0;
+
+  private readonly rocketSpeed = 560;
+  private readonly rocketCooldownMs = 520;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -65,6 +81,12 @@ export class Game {
 
     this.ui.onStart((sel) => this.startRace(sel));
     this.ui.onBack(() => this.toMenu());
+
+    this.ui.onPauseResume(() => this.setPaused(false));
+    this.ui.onPauseExit(() => {
+      this.setPaused(false);
+      this.toMenu();
+    });
 
     this.ui.onMusicChange((s) => {
       this.audio.setSettings(s);
@@ -97,6 +119,8 @@ export class Game {
 
   private toMenu(): void {
     this.phase = "menu";
+    this.paused = false;
+    this.ui.hidePause();
     this.ui.showMenu();
     this.karts = [];
     this.bots.clear();
@@ -114,6 +138,8 @@ export class Game {
 
     this.decor = generateDecor(this.trackQ);
     this.skids = [];
+    this.smoke = [];
+    this.rockets = [];
 
     // spawn behind start line so nobody starts by instantly crossing
     const startLine = this.trackQ.sampleAtS(0);
@@ -136,6 +162,8 @@ export class Game {
 
     this.karts = [];
     this.bots.clear();
+
+    const nowMs = performance.now();
 
     for (let i = 0; i < PLAYERS_TOTAL; i++) {
       const laneOffset = (i - (PLAYERS_TOTAL - 1) / 2) * 38;
@@ -161,6 +189,13 @@ export class Game {
       kart.prevMidD = v2.dot(v2.sub(kart.pos, midLine.point), midLine.tangent);
       // tiny random initial nudge so they separate
       kart.vel = v2.mul(spawn.tangent, randRange(0, 10));
+
+      kart.crashCount = 0;
+      kart.onFire = false;
+      kart.lastCrashMs = -1e9;
+      kart.lastShotMs = -1e9;
+      // bots will fire occasionally; player fires via mouse
+      kart.nextShotMs = nowMs + 900 + Math.random() * 1600;
       this.karts.push(kart);
 
       this.flagIcons.preload(kart.flag);
@@ -169,6 +204,8 @@ export class Game {
     }
 
     this.phase = "racing";
+    this.paused = false;
+    this.ui.hidePause();
     this.ui.showRaceHud();
     this.ui.toast(`${this.track.name} — ${LAPS_TOTAL} laps`, 1.6);
 
@@ -182,7 +219,10 @@ export class Game {
 
     if (this.phase === "racing") {
       if (this.input.wasPressed("Escape")) {
-        this.toMenu();
+        this.setPaused(!this.paused);
+      }
+
+      if (this.paused) {
         return;
       }
 
@@ -212,11 +252,42 @@ export class Game {
         updateKart(k, c, DEFAULT_TUNING, this.trackQ, dt, nowMs, LAPS_TOTAL);
       }
 
-      this.resolveKartCollisions();
+      this.resolveKartCollisions(nowMs);
+
+      this.updateRockets(dt, nowMs);
+      this.updateSmoke(dt);
+
+      // Fire RPG (player)
+      if (this.input.mouseWasPressed()) {
+        this.tryFireRocket(player, nowMs);
+      }
+
+      // Fire RPG (bots)
+      for (const k of this.karts) {
+        if (k.id === this.playerId) continue;
+        if (k.finished) continue;
+        if (nowMs < k.nextShotMs) continue;
+
+        const target = this.pickBotRocketTarget(k);
+        if (target) {
+          const dir = v2.norm(v2.sub(target.pos, k.pos));
+          this.spawnRocket(k, dir, nowMs);
+          k.nextShotMs = nowMs + 1050 + Math.random() * 1950;
+        } else {
+          // if nobody is reasonably in front, hold fire a bit
+          k.nextShotMs = nowMs + 450 + Math.random() * 900;
+        }
+      }
 
       // skid marks
       for (const k of this.karts) {
         this.addSkidMarksForKart(k, dt);
+      }
+
+      // smoke for burning karts
+      for (const k of this.karts) {
+        if (!k.onFire) continue;
+        this.emitSmokeForKart(k, dt);
       }
 
       // keep marks for the whole race, but cap count
@@ -312,6 +383,9 @@ export class Game {
     this.drawStartLine(ctx);
 
     this.drawSkids(ctx);
+
+    this.drawSmoke(ctx);
+    this.drawRockets(ctx);
 
     // draw karts
     for (const k of this.karts) {
@@ -443,6 +517,43 @@ export class Game {
       ctx.globalAlpha = 1;
     }
 
+    // on-fire effect
+    if (k.onFire) {
+      const t = performance.now() * 0.02;
+      const flick = 0.75 + 0.35 * Math.sin(t + k.pos.x * 0.01);
+      ctx.save();
+      // flames from rear
+      ctx.translate(-bodyW * 0.48, 0);
+
+      // glow
+      const glow = ctx.createRadialGradient(-10, 0, 2, -10, 0, 22);
+      glow.addColorStop(0, "rgba(255, 200, 80, 0.55)");
+      glow.addColorStop(1, "rgba(255, 120, 20, 0)");
+      ctx.fillStyle = glow;
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      ctx.arc(-10, 0, 22, 0, Math.PI * 2);
+      ctx.fill();
+
+      // flame tongues
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = "rgba(255, 190, 70, 0.95)";
+      ctx.beginPath();
+      ctx.ellipse(-8, 0, 12 * flick, 7 * flick, 0, 0, Math.PI * 2);
+      ctx.ellipse(-16, -5, 9 * flick, 6 * flick, 0.1, 0, Math.PI * 2);
+      ctx.ellipse(-16, 5, 9 * flick, 6 * flick, -0.1, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255, 70, 35, 0.9)";
+      ctx.beginPath();
+      ctx.ellipse(-12, 0, 9 * flick, 5.5 * flick, 0, 0, Math.PI * 2);
+      ctx.ellipse(-20, -4, 7 * flick, 4.8 * flick, 0, 0, Math.PI * 2);
+      ctx.ellipse(-20, 4, 7 * flick, 4.8 * flick, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+
     // name tag
     ctx.rotate(-k.angle);
     ctx.font =
@@ -494,6 +605,236 @@ export class Game {
     ctx.restore();
   }
 
+  private updateSmoke(dt: number): void {
+    if (this.smoke.length === 0) return;
+    for (const p of this.smoke) {
+      p.life -= dt;
+      p.pos = v2.add(p.pos, v2.mul(p.vel, dt));
+      // gentle drift + damping
+      p.vel = v2.mul(p.vel, 0.985);
+      p.vel = v2.add(p.vel, v2.make(0, -6 * dt));
+    }
+    // prune
+    this.smoke = this.smoke.filter((p) => p.life > 0);
+    const cap = 1400;
+    if (this.smoke.length > cap) this.smoke.splice(0, this.smoke.length - cap);
+  }
+
+  private emitSmokeForKart(k: Kart, dt: number): void {
+    // particles per second
+    const speed = v2.len(k.vel);
+    const rate = 40 + Math.min(45, speed * 0.08);
+    const count = Math.max(0, Math.floor(rate * dt + Math.random()));
+    if (count === 0) return;
+
+    const forward = v2.make(Math.cos(k.angle), Math.sin(k.angle));
+    const rear = v2.add(k.pos, v2.mul(forward, -14));
+
+    for (let i = 0; i < count; i++) {
+      const jitter = v2.make((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8);
+      const pos = v2.add(rear, jitter);
+
+      const base = v2.mul(k.vel, -0.22);
+      const rise = v2.make((Math.random() - 0.5) * 26, -45 - Math.random() * 35);
+      const vel = v2.add(base, rise);
+
+      const maxLife = 1.35 + Math.random() * 1.35;
+      const size = 9 + Math.random() * 14;
+      this.smoke.push({ pos, vel, life: maxLife, maxLife, size });
+    }
+  }
+
+  private setPaused(p: boolean): void {
+    if (this.phase !== "racing") return;
+    this.paused = p;
+    if (this.paused) {
+      const muted = this.ui.getMusicSettings().muted;
+      this.ui.showPause(muted);
+      this.ui.toast("Paused", 0.8);
+    } else {
+      this.ui.hidePause();
+    }
+  }
+
+  private pickBotRocketTarget(bot: Kart): Kart | null {
+    const myKey = estimateRaceOrderKey(bot, this.trackQ, LAPS_TOTAL);
+    const forward = v2.make(Math.cos(bot.angle), Math.sin(bot.angle));
+
+    let best: Kart | null = null;
+    let bestDist = Number.POSITIVE_INFINITY;
+
+    for (const other of this.karts) {
+      if (other.id === bot.id) continue;
+      if (other.finished) continue;
+      const ok = estimateRaceOrderKey(other, this.trackQ, LAPS_TOTAL);
+      if (ok <= myKey + 14) continue; // must be ahead (not just side-by-side)
+
+      const to = v2.sub(other.pos, bot.pos);
+      const dist = v2.len(to);
+      if (dist > 720) continue;
+      const dir = dist <= 1e-6 ? v2.make(1, 0) : v2.mul(to, 1 / dist);
+      const inFront = v2.dot(forward, dir);
+      if (inFront < 0.22) continue;
+
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = other;
+      }
+    }
+
+    if (best) return best;
+
+    // fallback: shoot at current race leader if nobody is clearly ahead/in-front
+    let leader: Kart | null = null;
+    let leaderKey = -1;
+    for (const other of this.karts) {
+      if (other.id === bot.id) continue;
+      if (other.finished) continue;
+      const ok = estimateRaceOrderKey(other, this.trackQ, LAPS_TOTAL);
+      if (ok > leaderKey) {
+        leaderKey = ok;
+        leader = other;
+      }
+    }
+    if (!leader || leader.id === bot.id) return null;
+
+    const d = v2.sub(leader.pos, bot.pos);
+    if (v2.len(d) > 900) return null;
+    return leader;
+  }
+
+  private drawSmoke(ctx: CanvasRenderingContext2D): void {
+    if (this.smoke.length === 0) return;
+    ctx.save();
+    for (const p of this.smoke) {
+      const t = clamp(p.life / p.maxLife, 0, 1);
+      const a = (1 - t) * 0.05 + t * 0.22;
+      ctx.fillStyle = `rgba(140, 140, 140, ${a})`;
+      ctx.beginPath();
+      ctx.arc(p.pos.x, p.pos.y, p.size * (1 + (1 - t) * 0.7), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private drawRockets(ctx: CanvasRenderingContext2D): void {
+    if (this.rockets.length === 0) return;
+    ctx.save();
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    for (const r of this.rockets) {
+      const dir = v2.norm(r.vel);
+      const a = Math.atan2(dir.y, dir.x);
+      ctx.save();
+      ctx.translate(r.pos.x, r.pos.y);
+      ctx.rotate(a);
+
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = "rgba(220, 230, 255, 0.9)";
+      roundRect(ctx, -10, -3, 18, 6, 3);
+      ctx.fill();
+      ctx.globalAlpha = 0.8;
+      ctx.fillStyle = "rgba(255, 170, 60, 0.9)";
+      ctx.beginPath();
+      ctx.arc(-12, 0, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  private screenToWorld(x: number, y: number): Vec2 {
+    const dpr = window.devicePixelRatio || 1;
+    const w = this.canvas.width / dpr;
+    const h = this.canvas.height / dpr;
+    const wx = this.camera.pos.x + (x - w / 2) / this.camera.zoom;
+    const wy = this.camera.pos.y + (y - h / 2) / this.camera.zoom;
+    return { x: wx, y: wy };
+  }
+
+  private tryFireRocket(player: Kart, nowMs: number): void {
+    if (nowMs - player.lastShotMs < this.rocketCooldownMs) return;
+
+    const mp = this.input.mousePos();
+    const aim = this.screenToWorld(mp.x, mp.y);
+    let dir = v2.norm(v2.sub(aim, player.pos));
+    if (v2.lenSq(dir) <= 1e-8) {
+      dir = v2.make(Math.cos(player.angle), Math.sin(player.angle));
+    }
+
+    this.spawnRocket(player, dir, nowMs);
+  }
+
+  private spawnRocket(owner: Kart, dir: Vec2, nowMs: number): void {
+    owner.lastShotMs = nowMs;
+
+    const muzzle = v2.add(owner.pos, v2.mul(dir, 18));
+    const vel = v2.add(v2.mul(dir, this.rocketSpeed), v2.mul(owner.vel, 0.2));
+    this.rockets.push({ pos: muzzle, vel, ownerId: owner.id, life: 2.6, radius: 7 });
+  }
+
+  private updateRockets(dt: number, nowMs: number): void {
+    if (this.rockets.length === 0) return;
+
+    const roadHalf = this.track.roadWidth * 0.5;
+
+    const next: Rocket[] = [];
+    for (const r of this.rockets) {
+      r.life -= dt;
+      if (r.life <= 0) continue;
+
+      r.pos = v2.add(r.pos, v2.mul(r.vel, dt));
+
+      // wall hit
+      const near = this.trackQ.nearest(r.pos);
+      if (near.distToCenter > roadHalf * 0.98) {
+        this.puffSmoke(r.pos, 10);
+        continue;
+      }
+
+      // kart hit
+      let hit = false;
+      for (const k of this.karts) {
+        if (k.finished) continue;
+        if (k.id === r.ownerId) continue;
+        const d = v2.sub(k.pos, r.pos);
+        const dist = Math.hypot(d.x, d.y);
+        if (dist > 14 + r.radius) continue;
+
+        const dir = v2.norm(r.vel);
+        k.vel = v2.add(k.vel, v2.mul(dir, 220));
+        k.vel = v2.mul(k.vel, 0.96);
+        this.registerCrash(k, 260, nowMs);
+        this.puffSmoke(r.pos, 14);
+        hit = true;
+        break;
+      }
+      if (hit) continue;
+
+      next.push(r);
+    }
+
+    this.rockets = next;
+  }
+
+  private puffSmoke(at: Vec2, amount: number): void {
+    for (let i = 0; i < amount; i++) {
+      const vel = v2.make((Math.random() - 0.5) * 90, -25 - Math.random() * 70);
+      const maxLife = 0.65 + Math.random() * 0.8;
+      const size = 5 + Math.random() * 9;
+      const pos = v2.add(at, v2.make((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10));
+      this.smoke.push({ pos, vel, life: maxLife, maxLife, size });
+    }
+  }
+
+  private registerCrash(k: Kart, intensity: number, nowMs: number): void {
+    if (intensity < 210) return;
+    if (nowMs - k.lastCrashMs < 420) return;
+    k.lastCrashMs = nowMs;
+    k.crashCount += 1;
+    if (k.crashCount >= 3) k.onFire = true;
+  }
+
   private addSkidMarksForKart(k: Kart, dt: number): void {
     // only when actively drifting at decent speed
     const speed = v2.len(k.vel);
@@ -521,7 +862,7 @@ export class Game {
     this.skids.push({ a: rightW, b: v2.add(rightW, back), life, color, w: 2.4 });
   }
 
-  private resolveKartCollisions(): void {
+  private resolveKartCollisions(nowMs: number): void {
     // simple circle collisions between karts
     const r = 14;
     const r2 = r * 2;
@@ -552,6 +893,13 @@ export class Game {
           const imp = v2.mul(n, impulse);
           a.vel = v2.sub(a.vel, imp);
           b.vel = v2.add(b.vel, imp);
+
+          // count hard bumps as crashes
+          const impact = -relAlong;
+          if (impact > 220) {
+            this.registerCrash(a, impact, nowMs);
+            this.registerCrash(b, impact, nowMs);
+          }
         }
 
         a.vel = v2.mul(a.vel, 0.995);

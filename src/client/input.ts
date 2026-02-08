@@ -6,6 +6,14 @@ export type Key =
   | "Space"
   | "Escape";
 
+type MouseState = {
+  down: boolean;
+  justPressed: boolean;
+  justReleased: boolean;
+  x: number;
+  y: number;
+};
+
 type KeyState = {
   down: boolean;
   pressedAtMs: number | null;
@@ -15,6 +23,13 @@ type KeyState = {
 
 export class Input {
   private readonly keys = new Map<Key, KeyState>();
+  private readonly mouse: MouseState = {
+    down: false,
+    justPressed: false,
+    justReleased: false,
+    x: 0,
+    y: 0,
+  };
 
   constructor(private readonly target: Window) {
     const init = (code: Key) => {
@@ -35,11 +50,21 @@ export class Input {
 
     this.target.addEventListener("keydown", this.onKeyDown, { passive: false });
     this.target.addEventListener("keyup", this.onKeyUp, { passive: false });
+
+    this.target.addEventListener("pointermove", this.onPointerMove, { passive: true });
+    this.target.addEventListener("pointerdown", this.onPointerDown, { passive: false });
+    this.target.addEventListener("pointerup", this.onPointerUp, { passive: true });
+    this.target.addEventListener("contextmenu", this.onContextMenu, { passive: false });
   }
 
   dispose(): void {
     this.target.removeEventListener("keydown", this.onKeyDown);
     this.target.removeEventListener("keyup", this.onKeyUp);
+
+    this.target.removeEventListener("pointermove", this.onPointerMove);
+    this.target.removeEventListener("pointerdown", this.onPointerDown);
+    this.target.removeEventListener("pointerup", this.onPointerUp);
+    this.target.removeEventListener("contextmenu", this.onContextMenu);
   }
 
   beginFrame(): void {
@@ -47,6 +72,21 @@ export class Input {
       state.justPressed = false;
       state.justReleased = false;
     }
+
+    this.mouse.justPressed = false;
+    this.mouse.justReleased = false;
+  }
+
+  mouseWasPressed(): boolean {
+    return this.mouse.justPressed;
+  }
+
+  mouseIsDown(): boolean {
+    return this.mouse.down;
+  }
+
+  mousePos(): { x: number; y: number } {
+    return { x: this.mouse.x, y: this.mouse.y };
   }
 
   isDown(code: Key): boolean {
@@ -91,5 +131,40 @@ export class Input {
       st.justReleased = true;
       st.pressedAtMs = null;
     }
+  };
+
+  private readonly onPointerMove = (e: PointerEvent) => {
+    this.mouse.x = e.clientX;
+    this.mouse.y = e.clientY;
+  };
+
+  private readonly onPointerDown = (e: PointerEvent) => {
+    if (e.button !== 0) return;
+    // Prevent text selection / drag interactions over the canvas,
+    // but don't interfere with UI controls.
+    const t = e.target as unknown;
+    const el = t instanceof HTMLElement ? t : null;
+    if (!el?.closest?.("#ui")) e.preventDefault();
+    if (!this.mouse.down) {
+      this.mouse.down = true;
+      this.mouse.justPressed = true;
+    }
+    this.mouse.x = e.clientX;
+    this.mouse.y = e.clientY;
+  };
+
+  private readonly onPointerUp = (e: PointerEvent) => {
+    if (e.button !== 0) return;
+    if (this.mouse.down) {
+      this.mouse.down = false;
+      this.mouse.justReleased = true;
+    }
+    this.mouse.x = e.clientX;
+    this.mouse.y = e.clientY;
+  };
+
+  private readonly onContextMenu = (e: MouseEvent) => {
+    // avoid right-click menu popping up over the game
+    e.preventDefault();
   };
 }

@@ -45,6 +45,7 @@ export class UI {
   private readonly elMenu = document.getElementById("menu") as HTMLDivElement;
   private readonly elHud = document.getElementById("hud") as HTMLDivElement;
   private readonly elResults = document.getElementById("results") as HTMLDivElement;
+  private readonly elPause = document.getElementById("pause") as HTMLDivElement;
 
   private readonly elName = document.getElementById("playerName") as HTMLInputElement;
   private readonly elFlag = document.getElementById("playerFlag") as HTMLSelectElement;
@@ -52,6 +53,10 @@ export class UI {
 
   private readonly elStart = document.getElementById("startBtn") as HTMLButtonElement;
   private readonly elBack = document.getElementById("backBtn") as HTMLButtonElement;
+
+  private readonly elResume = document.getElementById("resumeBtn") as HTMLButtonElement;
+  private readonly elExit = document.getElementById("exitBtn") as HTMLButtonElement;
+  private readonly elPauseMute = document.getElementById("pauseMute") as HTMLInputElement;
 
   private readonly elLap = document.getElementById("lapText") as HTMLDivElement;
   private readonly elPos = document.getElementById("posText") as HTMLDivElement;
@@ -74,6 +79,8 @@ export class UI {
   ) as HTMLInputElement;
 
   private musicCb: ((s: MusicSettings) => void) | null = null;
+  private pauseResumeCb: (() => void) | null = null;
+  private pauseExitCb: (() => void) | null = null;
 
   constructor() {
     this.tracks = createTracks();
@@ -105,6 +112,7 @@ export class UI {
     const saved = this.loadMusicSettings();
     this.elMusicMute.checked = saved.muted;
     this.elMusicIntensity.value = String(Math.round(saved.intensity * 100));
+    this.elPauseMute.checked = saved.muted;
 
     const emit = () => {
       const s = this.getMusicSettings();
@@ -113,6 +121,13 @@ export class UI {
     };
     this.elMusicMute.addEventListener("change", emit);
     this.elMusicIntensity.addEventListener("input", emit);
+
+    this.elPauseMute.addEventListener("change", () => {
+      this.setMusicMuted(this.elPauseMute.checked);
+    });
+
+    this.elResume.addEventListener("click", () => this.pauseResumeCb?.());
+    this.elExit.addEventListener("click", () => this.pauseExitCb?.());
 
     // show player tag in HUD (top-left)
     this.elHudPlayer.style.marginTop = "6px";
@@ -135,14 +150,17 @@ export class UI {
     const url = flagToTwemojiUrl(flag);
     if (!url) {
       this.elFlagPreviewImg.style.display = "none";
+      this.elFlagPreviewText.style.display = "block";
       return;
     }
 
     this.elFlagPreviewImg.onload = () => {
       this.elFlagPreviewImg.style.display = "block";
+      this.elFlagPreviewText.style.display = "none";
     };
     this.elFlagPreviewImg.onerror = () => {
       this.elFlagPreviewImg.style.display = "none";
+      this.elFlagPreviewText.style.display = "block";
     };
     this.elFlagPreviewImg.src = url;
   }
@@ -150,6 +168,22 @@ export class UI {
   onMusicChange(cb: (s: MusicSettings) => void): void {
     this.musicCb = cb;
     cb(this.getMusicSettings());
+  }
+
+  setMusicMuted(muted: boolean): void {
+    this.elMusicMute.checked = muted;
+    this.elPauseMute.checked = muted;
+    const s = this.getMusicSettings();
+    this.saveMusicSettings(s);
+    this.musicCb?.(s);
+  }
+
+  onPauseResume(cb: () => void): void {
+    this.pauseResumeCb = cb;
+  }
+
+  onPauseExit(cb: () => void): void {
+    this.pauseExitCb = cb;
   }
 
   getMusicSettings(): MusicSettings {
@@ -194,18 +228,21 @@ export class UI {
     this.elMenu.classList.remove("hidden");
     this.elHud.classList.add("hidden");
     this.elResults.classList.add("hidden");
+    this.elPause.classList.add("hidden");
   }
 
   showRaceHud(): void {
     this.elMenu.classList.add("hidden");
     this.elHud.classList.remove("hidden");
     this.elResults.classList.add("hidden");
+    this.elPause.classList.add("hidden");
   }
 
   showResults(entries: LeaderboardEntry[]): void {
     this.elMenu.classList.add("hidden");
     this.elHud.classList.add("hidden");
     this.elResults.classList.remove("hidden");
+    this.elPause.classList.add("hidden");
 
     this.elLeaderboard.innerHTML = "";
     for (const e of entries) {
@@ -213,6 +250,15 @@ export class UI {
       li.textContent = `${e.flag} ${e.name} — ${formatTime(e.timeMs)}`;
       this.elLeaderboard.appendChild(li);
     }
+  }
+
+  showPause(muted: boolean): void {
+    this.elPauseMute.checked = muted;
+    this.elPause.classList.remove("hidden");
+  }
+
+  hidePause(): void {
+    this.elPause.classList.add("hidden");
   }
 
   getSelection(): MenuSelection {

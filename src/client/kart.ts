@@ -66,6 +66,13 @@ export type Kart = {
   // robust lap-crossing
   prevStartD: number;
   prevMidD: number;
+
+  // crashes / weapons
+  crashCount: number;
+  lastCrashMs: number;
+  onFire: boolean;
+  lastShotMs: number;
+  nextShotMs: number;
 };
 
 export function createKart(params: {
@@ -96,6 +103,12 @@ export function createKart(params: {
     passedHalf: false,
     prevStartD: 0,
     prevMidD: 0,
+
+    crashCount: 0,
+    lastCrashMs: -1e9,
+    onFire: false,
+    lastShotMs: -1e9,
+    nextShotMs: 0,
   };
 }
 
@@ -227,10 +240,18 @@ export function updateKart(
 
     // Remove outward velocity + small bounce back
     const outV = v2.dot(kart.vel, outward);
+    const impact = Math.max(0, outV);
     if (outV > 0) {
       kart.vel = v2.sub(kart.vel, v2.mul(outward, outV * 1.15));
     }
     kart.vel = v2.mul(kart.vel, 0.92);
+
+    // Crash counter (hard impacts only; cooldown to avoid multi-counting while sliding)
+    if (impact > 135 && nowMs - kart.lastCrashMs > 420) {
+      kart.lastCrashMs = nowMs;
+      kart.crashCount += 1;
+      if (kart.crashCount >= 3) kart.onFire = true;
+    }
   }
 
   const nearAfter = track.nearest(kart.pos);
