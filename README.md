@@ -1,10 +1,10 @@
 # KartSim
 
+A small 2D Mario-Kart-like browser racer (1 player + 4 bots) built with TypeScript + Bun.
+
 If in-world flag icons don’t show (only the 2-letter fallback like "us"), download local Twemoji flag PNGs:
 
 `bun run fetch:flags`
-
-A small 2D Mario-Kart-like browser racer (1 player + 4 bots) built with TypeScript + Bun.
 
 ## Requirements
 
@@ -36,3 +36,11 @@ If the file is missing, it falls back to a small procedural soundtrack.
 - `Space` tap: jump (hop)
 - `Space` hold: drift (tighter turns, boost on release)
 - `Esc`: back to menu
+
+## Original Goal
+
+- 5 players (1 user + 4 bots)
+- WASD driving, drift/jump on Space
+- Menu to choose name, flag, map
+- 3 maps, 3 laps, leaderboard
+- Built with Bun + TypeScript
