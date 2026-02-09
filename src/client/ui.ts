@@ -1,10 +1,12 @@
 import { createTracks, type Track } from "./track";
-import { flagToTwemojiUrl } from "./flags";
+import { flagToTwemojiFallbackUrl, flagToTwemojiUrl } from "./flags";
 
 export type MenuSelection = {
   name: string;
   flag: string;
   trackId: string;
+  rpgReloadMs: number;
+  rpgImpact: number;
 };
 
 export type LeaderboardEntry = {
@@ -57,6 +59,7 @@ export class UI {
   private readonly elResume = document.getElementById("resumeBtn") as HTMLButtonElement;
   private readonly elExit = document.getElementById("exitBtn") as HTMLButtonElement;
   private readonly elPauseMute = document.getElementById("pauseMute") as HTMLInputElement;
+  private readonly elPauseIntensity = document.getElementById("pauseIntensity") as HTMLInputElement;
 
   private readonly elLap = document.getElementById("lapText") as HTMLDivElement;
   private readonly elPos = document.getElementById("posText") as HTMLDivElement;
@@ -77,10 +80,14 @@ export class UI {
   private readonly elMusicIntensity = document.getElementById(
     "musicIntensity",
   ) as HTMLInputElement;
+  private readonly elRpgReload = document.getElementById("rpgReload") as HTMLInputElement;
+  private readonly elRpgImpact = document.getElementById("rpgImpact") as HTMLInputElement;
 
   private musicCb: ((s: MusicSettings) => void) | null = null;
   private pauseResumeCb: (() => void) | null = null;
   private pauseExitCb: (() => void) | null = null;
+
+  private syncingMusicUi = false;
 
   constructor() {
     this.tracks = createTracks();
@@ -113,17 +120,48 @@ export class UI {
     this.elMusicMute.checked = saved.muted;
     this.elMusicIntensity.value = String(Math.round(saved.intensity * 100));
     this.elPauseMute.checked = saved.muted;
+    this.elPauseIntensity.value = String(Math.round(saved.intensity * 100));
 
     const emit = () => {
       const s = this.getMusicSettings();
       this.saveMusicSettings(s);
       this.musicCb?.(s);
     };
+    // rpg settings (persisted)
+    const rpg = this.loadRpgSettings();
+    this.elRpgReload.value = String(rpg.reloadMs);
+    this.elRpgImpact.value = String(rpg.impact);
+
+    const emitRpg = () => {
+      this.saveRpgSettings(this.getRpgSettings());
+    };
+    this.elRpgReload.addEventListener("input", emitRpg);
+    this.elRpgImpact.addEventListener("input", emitRpg);
+
+    const syncIntensityUi = (value: string) => {
+      if (this.syncingMusicUi) return;
+      this.syncingMusicUi = true;
+      try {
+        if (this.elMusicIntensity.value !== value) this.elMusicIntensity.value = value;
+        if (this.elPauseIntensity.value !== value) this.elPauseIntensity.value = value;
+      } finally {
+        this.syncingMusicUi = false;
+      }
+    };
+
     this.elMusicMute.addEventListener("change", emit);
-    this.elMusicIntensity.addEventListener("input", emit);
+    this.elMusicIntensity.addEventListener("input", () => {
+      syncIntensityUi(this.elMusicIntensity.value);
+      emit();
+    });
 
     this.elPauseMute.addEventListener("change", () => {
       this.setMusicMuted(this.elPauseMute.checked);
+    });
+
+    this.elPauseIntensity.addEventListener("input", () => {
+      syncIntensityUi(this.elPauseIntensity.value);
+      emit();
     });
 
     this.elResume.addEventListener("click", () => this.pauseResumeCb?.());
@@ -147,8 +185,9 @@ export class UI {
 
   private updateFlagPreview(flag: string): void {
     this.elFlagPreviewText.textContent = flag;
-    const url = flagToTwemojiUrl(flag);
-    if (!url) {
+    const primaryUrl = flagToTwemojiUrl(flag);
+    const fallbackUrl = flagToTwemojiFallbackUrl(flag);
+    if (!primaryUrl) {
       this.elFlagPreviewImg.style.display = "none";
       this.elFlagPreviewText.style.display = "block";
       return;
@@ -159,10 +198,14 @@ export class UI {
       this.elFlagPreviewText.style.display = "none";
     };
     this.elFlagPreviewImg.onerror = () => {
+      if (fallbackUrl && this.elFlagPreviewImg.src !== fallbackUrl) {
+        this.elFlagPreviewImg.src = fallbackUrl;
+        return;
+      }
       this.elFlagPreviewImg.style.display = "none";
       this.elFlagPreviewText.style.display = "block";
     };
-    this.elFlagPreviewImg.src = url;
+    this.elFlagPreviewImg.src = primaryUrl;
   }
 
   onMusicChange(cb: (s: MusicSettings) => void): void {
@@ -254,6 +297,10 @@ export class UI {
 
   showPause(muted: boolean): void {
     this.elPauseMute.checked = muted;
+    // keep intensity slider synced for when pause is opened mid-race
+    const s = this.getMusicSettings();
+    const v = String(Math.round(s.intensity * 100));
+    if (this.elPauseIntensity.value !== v) this.elPauseIntensity.value = v;
     this.elPause.classList.remove("hidden");
   }
 
@@ -265,7 +312,36 @@ export class UI {
     const name = this.elName.value.trim() || "Player";
     const flag = this.elFlag.value;
     const trackId = this.elMap.value;
-    return { name: name.slice(0, 16), flag, trackId };
+    const rpg = this.getRpgSettings();
+    return { name: name.slice(0, 16), flag, trackId, rpgReloadMs: rpg.reloadMs, rpgImpact: rpg.impact };
+  }
+
+  private getRpgSettings(): { reloadMs: number; impact: number } {
+    const reloadMs = Math.max(200, Math.min(1200, Number(this.elRpgReload.value) || 520));
+    const impact = Math.max(120, Math.min(420, Number(this.elRpgImpact.value) || 260));
+    return { reloadMs, impact };
+  }
+
+  private loadRpgSettings(): { reloadMs: number; impact: number } {
+    try {
+      const raw = localStorage.getItem("kartsim:rpg");
+      if (!raw) return { reloadMs: 520, impact: 260 };
+      const v = JSON.parse(raw) as Partial<{ reloadMs: number; impact: number }>;
+      return {
+        reloadMs: typeof v.reloadMs === "number" ? Math.max(200, Math.min(1200, v.reloadMs)) : 520,
+        impact: typeof v.impact === "number" ? Math.max(120, Math.min(420, v.impact)) : 260,
+      };
+    } catch {
+      return { reloadMs: 520, impact: 260 };
+    }
+  }
+
+  private saveRpgSettings(s: { reloadMs: number; impact: number }): void {
+    try {
+      localStorage.setItem("kartsim:rpg", JSON.stringify(s));
+    } catch {
+      // ignore
+    }
   }
 
   updateHud(
@@ -285,16 +361,21 @@ export class UI {
       const flag = firstSpace > 0 ? playerTag.slice(0, firstSpace) : "";
       const name = firstSpace > 0 ? playerTag.slice(firstSpace + 1) : playerTag;
 
-      const url = flagToTwemojiUrl(flag);
-      this.elHudName.textContent = url ? name : playerTag;
-      if (url) {
+      const primaryUrl = flagToTwemojiUrl(flag);
+      const fallbackUrl = flagToTwemojiFallbackUrl(flag);
+      this.elHudName.textContent = primaryUrl ? name : playerTag;
+      if (primaryUrl) {
         this.elHudFlagImg.onload = () => {
           this.elHudFlagImg.style.display = "inline-block";
         };
         this.elHudFlagImg.onerror = () => {
+          if (fallbackUrl && this.elHudFlagImg.src !== fallbackUrl) {
+            this.elHudFlagImg.src = fallbackUrl;
+            return;
+          }
           this.elHudFlagImg.style.display = "none";
         };
-        if (this.elHudFlagImg.src !== url) this.elHudFlagImg.src = url;
+        if (this.elHudFlagImg.src !== primaryUrl) this.elHudFlagImg.src = primaryUrl;
       } else {
         this.elHudFlagImg.style.display = "none";
       }

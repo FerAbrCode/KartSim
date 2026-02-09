@@ -26,6 +26,23 @@ type Skid = { a: Vec2; b: Vec2; life: number; color: string; w: number };
 
 type Smoke = { pos: Vec2; vel: Vec2; life: number; maxLife: number; size: number };
 
+type Spark = {
+  pos: Vec2;
+  vel: Vec2;
+  life: number;
+  maxLife: number;
+  size: number;
+  color: string;
+};
+
+type Shockwave = {
+  pos: Vec2;
+  t: number;
+  maxT: number;
+  r0: number;
+  r1: number;
+};
+
 type Rocket = {
   pos: Vec2;
   vel: Vec2;
@@ -58,12 +75,17 @@ export class Game {
   private skids: Skid[] = [];
   private smoke: Smoke[] = [];
   private rockets: Rocket[] = [];
+  private sparks: Spark[] = [];
+  private shockwaves: Shockwave[] = [];
+
+  private shake = 0;
 
   private startMs = 0;
   private lastFrameMs = 0;
 
   private readonly rocketSpeed = 560;
-  private readonly rocketCooldownMs = 520;
+  private rocketCooldownMs = 520;
+  private rocketImpact = 260;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -105,10 +127,13 @@ export class Game {
       const dt = clamp((now - this.lastFrameMs) / 1000, 0, 1 / 20);
       this.lastFrameMs = now;
 
-      this.input.beginFrame();
-
       this.update(dt, now);
       this.render(dt, now);
+
+      // Clear per-frame edge flags AFTER consuming them.
+      // Events can arrive between animation frames; clearing at frame start
+      // would drop them and make ESC/click feel unreliable.
+      this.input.beginFrame();
 
       this.audio.tick();
 
@@ -140,6 +165,11 @@ export class Game {
     this.skids = [];
     this.smoke = [];
     this.rockets = [];
+    this.sparks = [];
+    this.shockwaves = [];
+    this.rocketCooldownMs = sel.rpgReloadMs;
+    this.rocketImpact = sel.rpgImpact;
+    this.shake = 0;
 
     // spawn behind start line so nobody starts by instantly crossing
     const startLine = this.trackQ.sampleAtS(0);
@@ -256,6 +286,11 @@ export class Game {
 
       this.updateRockets(dt, nowMs);
       this.updateSmoke(dt);
+      this.updateSparks(dt);
+      this.updateShockwaves(dt);
+
+      // camera shake decay
+      this.shake = Math.max(0, this.shake - dt * 2.6);
 
       // Fire RPG (player)
       if (this.input.mouseWasPressed()) {
@@ -272,10 +307,10 @@ export class Game {
         if (target) {
           const dir = v2.norm(v2.sub(target.pos, k.pos));
           this.spawnRocket(k, dir, nowMs);
-          k.nextShotMs = nowMs + 1050 + Math.random() * 1950;
+          k.nextShotMs = nowMs + this.rocketCooldownMs * (0.8 + Math.random() * 1.6);
         } else {
           // if nobody is reasonably in front, hold fire a bit
-          k.nextShotMs = nowMs + 450 + Math.random() * 900;
+          k.nextShotMs = nowMs + this.rocketCooldownMs * (0.4 + Math.random() * 0.8);
         }
       }
 
@@ -365,6 +400,16 @@ export class Game {
     // world transform
     ctx.save();
     ctx.translate(w / 2, h / 2);
+
+    // screen-space camera shake
+    if (this.shake > 0) {
+      const s = this.shake * this.shake;
+      const amp = 7 * s;
+      const sx = Math.sin(_nowMs * 0.028) * amp + Math.sin(_nowMs * 0.071) * amp * 0.35;
+      const sy = Math.cos(_nowMs * 0.031) * amp + Math.cos(_nowMs * 0.083) * amp * 0.35;
+      ctx.translate(sx, sy);
+    }
+
     ctx.scale(this.camera.zoom, this.camera.zoom);
     ctx.translate(-this.camera.pos.x, -this.camera.pos.y);
 
@@ -383,7 +428,8 @@ export class Game {
     this.drawStartLine(ctx);
 
     this.drawSkids(ctx);
-
+    this.drawShockwaves(ctx);
+    this.drawSparks(ctx);
     this.drawSmoke(ctx);
     this.drawRockets(ctx);
 
@@ -785,10 +831,25 @@ export class Game {
 
       r.pos = v2.add(r.pos, v2.mul(r.vel, dt));
 
+      // trail
+      if (Math.random() < Math.min(0.9, dt * 32)) {
+        const back = v2.norm(v2.mul(r.vel, -1));
+        const at = v2.add(r.pos, v2.mul(back, 10));
+        this.puffSmoke(at, 1);
+        this.sparks.push({
+          pos: { ...at },
+          vel: v2.add(v2.mul(back, 220 + Math.random() * 260), v2.make((Math.random() - 0.5) * 120, (Math.random() - 0.5) * 120)),
+          life: 0.18 + Math.random() * 0.14,
+          maxLife: 0.32,
+          size: 1.5 + Math.random() * 1.6,
+          color: "rgba(255, 190, 80, 1)",
+        });
+      }
+
       // wall hit
       const near = this.trackQ.nearest(r.pos);
       if (near.distToCenter > roadHalf * 0.98) {
-        this.puffSmoke(r.pos, 10);
+        this.explodeRocket(r.pos, v2.norm(r.vel), nowMs, this.rocketImpact);
         continue;
       }
 
@@ -802,10 +863,11 @@ export class Game {
         if (dist > 14 + r.radius) continue;
 
         const dir = v2.norm(r.vel);
-        k.vel = v2.add(k.vel, v2.mul(dir, 220));
+        const impulse = this.rocketImpact * 0.9;
+        k.vel = v2.add(k.vel, v2.mul(dir, impulse));
         k.vel = v2.mul(k.vel, 0.96);
-        this.registerCrash(k, 260, nowMs);
-        this.puffSmoke(r.pos, 14);
+        this.registerCrash(k, this.rocketImpact, nowMs);
+        this.explodeRocket(r.pos, dir, nowMs, this.rocketImpact);
         hit = true;
         break;
       }
@@ -817,6 +879,123 @@ export class Game {
     this.rockets = next;
   }
 
+  private explodeRocket(at: Vec2, dir: Vec2, nowMs: number, impact: number): void {
+    const mag = clamp(impact / 260, 0.5, 2.2);
+    // shake
+    this.shake = Math.min(0.9, this.shake + 0.35 * mag);
+
+    // shockwave
+    this.shockwaves.push({ pos: { ...at }, t: 0, maxT: 0.52, r0: 10 * mag, r1: 170 * mag });
+
+    // smoke + sparks
+    this.puffSmoke(at, Math.round(26 * mag + 14));
+    for (let i = 0; i < Math.round(70 * mag + 30); i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const u = Math.random();
+      const sp = (240 + u * 880) * mag;
+      const v = v2.make(Math.cos(ang) * sp, Math.sin(ang) * sp);
+      // bias a bit forward
+      const vel = v2.add(v, v2.mul(dir, 180 * mag));
+      const maxLife = 0.22 + Math.random() * 0.36;
+      const color =
+        Math.random() < 0.22
+          ? "rgba(255, 250, 220, 1)"
+          : Math.random() < 0.65
+            ? "rgba(255, 180, 70, 1)"
+            : "rgba(255, 110, 60, 1)";
+      const pos = v2.add(at, v2.make((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10));
+      this.sparks.push({ pos, vel, life: maxLife, maxLife, size: 1.6 + Math.random() * 3.2 * mag, color });
+    }
+
+    // area knockback
+    const radius = 145 * mag + 35;
+    for (const k of this.karts) {
+      if (k.finished) continue;
+      const d = v2.sub(k.pos, at);
+      const dist = v2.len(d);
+      if (dist > radius) continue;
+
+      const n = dist <= 1e-4 ? v2.norm(v2.make(Math.random() - 0.5, Math.random() - 0.5)) : v2.mul(d, 1 / dist);
+      const fall = 1 - dist / radius;
+      const impulse = (520 * fall + 90) * mag;
+      k.vel = v2.add(k.vel, v2.mul(n, impulse));
+      k.vel = v2.mul(k.vel, 0.975);
+
+      const crashI = (220 + fall * 240) * mag;
+      this.registerCrash(k, crashI, nowMs);
+    }
+  }
+
+  private updateSparks(dt: number): void {
+    if (this.sparks.length === 0) return;
+    for (const p of this.sparks) {
+      p.life -= dt;
+      p.pos = v2.add(p.pos, v2.mul(p.vel, dt));
+      p.vel = v2.mul(p.vel, 0.94);
+      // slight drift
+      p.vel = v2.add(p.vel, v2.make(0, -12 * dt));
+    }
+    this.sparks = this.sparks.filter((p) => p.life > 0);
+    const cap = 1800;
+    if (this.sparks.length > cap) this.sparks.splice(0, this.sparks.length - cap);
+  }
+
+  private updateShockwaves(dt: number): void {
+    if (this.shockwaves.length === 0) return;
+    for (const w of this.shockwaves) w.t += dt;
+    this.shockwaves = this.shockwaves.filter((w) => w.t < w.maxT);
+  }
+
+  private drawSparks(ctx: CanvasRenderingContext2D): void {
+    if (this.sparks.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const p of this.sparks) {
+      const t = clamp(p.life / p.maxLife, 0, 1);
+      const a = 0.12 + t * 0.7;
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = p.size;
+
+      const v = p.vel;
+      const dir = v2.lenSq(v) <= 1e-8 ? v2.make(1, 0) : v2.norm(v);
+      const len = 8 + (1 - t) * 18;
+      ctx.beginPath();
+      ctx.moveTo(p.pos.x, p.pos.y);
+      ctx.lineTo(p.pos.x - dir.x * len, p.pos.y - dir.y * len);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private drawShockwaves(ctx: CanvasRenderingContext2D): void {
+    if (this.shockwaves.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (const w of this.shockwaves) {
+      const t = clamp(w.t / w.maxT, 0, 1);
+      const r = w.r0 + (w.r1 - w.r0) * t;
+      const a = (1 - t) * 0.55;
+
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = "rgba(255, 210, 120, 1)";
+      ctx.lineWidth = 6 * (1 - t) + 2;
+      ctx.beginPath();
+      ctx.arc(w.pos.x, w.pos.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.globalAlpha = a * 0.75;
+      ctx.strokeStyle = "rgba(255, 255, 255, 1)";
+      ctx.lineWidth = 2 * (1 - t) + 1;
+      ctx.beginPath();
+      ctx.arc(w.pos.x, w.pos.y, r * 0.86, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   private puffSmoke(at: Vec2, amount: number): void {
     for (let i = 0; i < amount; i++) {
       const vel = v2.make((Math.random() - 0.5) * 90, -25 - Math.random() * 70);
@@ -825,6 +1004,29 @@ export class Game {
       const pos = v2.add(at, v2.make((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10));
       this.smoke.push({ pos, vel, life: maxLife, maxLife, size });
     }
+  }
+
+  private spawnExplosionFx(pos: Vec2, dir: Vec2, impact: number): void {
+    const mag = clamp(impact / 260, 0.5, 2.2);
+
+    // shockwave ring
+    this.shockwaves.push({ pos: { ...pos }, t: 0, maxT: 0.35, r0: 18 * mag, r1: 70 * mag });
+
+    // sparks
+    const count = Math.round(10 + 12 * mag);
+    for (let i = 0; i < count; i++) {
+      const a = (Math.random() - 0.5) * Math.PI * 0.9;
+      const d = v2.rot(dir, a);
+      const speed = (120 + Math.random() * 260) * mag;
+      const vel = v2.add(v2.mul(d, speed), v2.make((Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80));
+      const maxLife = 0.35 + Math.random() * 0.35;
+      const size = 1.6 + Math.random() * 2.2;
+      const color = Math.random() < 0.6 ? "#ffd066" : "#ff7a45";
+      this.sparks.push({ pos: { ...pos }, vel, life: maxLife, maxLife, size, color });
+    }
+
+    // extra smoke puff
+    this.puffSmoke(pos, Math.round(6 + 10 * mag));
   }
 
   private registerCrash(k: Kart, intensity: number, nowMs: number): void {

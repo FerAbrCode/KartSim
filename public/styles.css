@@ -86,6 +86,10 @@ body {
   margin-top: 6px;
 }
 
+.pauseRange {
+  margin-top: 10px;
+}
+
 .row {
   display: grid;
   grid-template-columns: 92px 1fr;

@@ -6,6 +6,7 @@
     "dev": "bun --watch server.ts",
     "dev:server": "bun --watch server.ts",
     "dev:client": "bun run build:watch",
+    "fetch:flags": "bun scripts/fetch_twemoji_flags.ts",
     "build": "bun build src/client/main.ts --outdir public/build --entry-naming=[name].js --sourcemap",
     "build:watch": "bun build src/client/main.ts --outdir public/build --entry-naming=[name].js --sourcemap --watch",
     "start": "bun server.ts"

@@ -1,5 +1,9 @@
 # KartSim
 
+If in-world flag icons don’t show (only the 2-letter fallback like "us"), download local Twemoji flag PNGs:
+
+`bun run fetch:flags`
+
 A small 2D Mario-Kart-like browser racer (1 player + 4 bots) built with TypeScript + Bun.
 
 ## Requirements

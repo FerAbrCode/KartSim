@@ -33,6 +33,20 @@
         </label>
 
         <div class="row">
+          <span>RPG</span>
+          <div class="musicRow">
+            <label class="range">
+              <span>Reload</span>
+              <input id="rpgReload" type="range" min="200" max="1200" value="520" />
+            </label>
+            <label class="range">
+              <span>Impact</span>
+              <input id="rpgImpact" type="range" min="120" max="420" value="260" />
+            </label>
+          </div>
+        </div>
+
+        <div class="row">
           <span>Music</span>
           <div class="musicRow">
             <label class="check">
@@ -52,6 +66,7 @@
           <div><b>Controls</b></div>
           <div>W/S: forward/back · A/D: steer</div>
           <div>Space tap: jump · Space hold: drift (tighter turns)</div>
+          <div>Mouse click: fire RPG at cursor · Esc: pause</div>
         </div>
       </div>
 
@@ -77,6 +92,10 @@
         <label class="check pauseMute">
           <input id="pauseMute" type="checkbox" />
           <span>Mute music</span>
+        </label>
+        <label class="range pauseRange">
+          <span>Sound</span>
+          <input id="pauseIntensity" type="range" min="0" max="100" value="60" />
         </label>
         <div class="pauseActions">
           <button id="resumeBtn" class="primary">Resume</button>
