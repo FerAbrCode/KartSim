@@ -51,6 +51,13 @@ type Rocket = {
   radius: number;
 };
 
+type DroneStrike = {
+  pos: Vec2;
+  t: number;
+  dir: Vec2;
+  fired: boolean;
+};
+
 export class Game {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -77,6 +84,10 @@ export class Game {
   private rockets: Rocket[] = [];
   private sparks: Spark[] = [];
   private shockwaves: Shockwave[] = [];
+
+  private droneStrikes: DroneStrike[] = [];
+  private lastDroneStrikeMs = -1e9;
+  private readonly droneCooldownMs = 9000;
 
   private shake = 0;
 
@@ -167,6 +178,8 @@ export class Game {
     this.rockets = [];
     this.sparks = [];
     this.shockwaves = [];
+    this.droneStrikes = [];
+    this.lastDroneStrikeMs = -1e9;
     this.rocketCooldownMs = sel.rpgReloadMs;
     this.rocketImpact = sel.rpgImpact;
     this.shake = 0;
@@ -288,6 +301,7 @@ export class Game {
       this.updateSmoke(dt);
       this.updateSparks(dt);
       this.updateShockwaves(dt);
+      this.updateDroneStrikes(dt, nowMs);
 
       // camera shake decay
       this.shake = Math.max(0, this.shake - dt * 2.6);
@@ -295,6 +309,11 @@ export class Game {
       // Fire RPG (player)
       if (this.input.mouseWasPressed()) {
         this.tryFireRocket(player, nowMs);
+      }
+
+      // Drone strike (player)
+      if (this.input.wasPressed("KeyE")) {
+        this.tryCallDroneStrike(player, nowMs);
       }
 
       // Fire RPG (bots)
@@ -426,6 +445,7 @@ export class Game {
 
     this.drawTrack(ctx);
     this.drawStartLine(ctx);
+    this.drawDroneStrikes(ctx);
 
     this.drawSkids(ctx);
     this.drawShockwaves(ctx);
@@ -438,6 +458,86 @@ export class Game {
       this.drawKart(ctx, k);
     }
 
+    ctx.restore();
+  }
+
+  private tryCallDroneStrike(player: Kart, nowMs: number): void {
+    const since = nowMs - this.lastDroneStrikeMs;
+    if (since < this.droneCooldownMs) {
+      const remain = Math.max(0, this.droneCooldownMs - since);
+      this.ui.toast(`Drone reloading (${(remain / 1000).toFixed(1)}s)`, 0.7);
+      return;
+    }
+
+    const mp = this.input.mousePos();
+    const target = this.screenToWorld(mp.x, mp.y);
+    let dir = v2.norm(v2.sub(target, player.pos));
+    if (v2.lenSq(dir) <= 1e-8) {
+      dir = v2.make(Math.cos(player.angle), Math.sin(player.angle));
+    }
+
+    this.lastDroneStrikeMs = nowMs;
+    this.droneStrikes.push({ pos: target, t: 0, dir, fired: false });
+    this.ui.toast("Drone strike inbound!", 0.85);
+  }
+
+  private updateDroneStrikes(dt: number, nowMs: number): void {
+    if (this.droneStrikes.length === 0) return;
+
+    const keep: DroneStrike[] = [];
+    for (const s of this.droneStrikes) {
+      s.t += dt;
+      if (!s.fired && s.t >= 0.95) {
+        s.fired = true;
+        this.fireDroneStrike(s, nowMs);
+      }
+      if (s.t < 1.35) keep.push(s);
+    }
+    this.droneStrikes = keep;
+  }
+
+  private fireDroneStrike(s: DroneStrike, nowMs: number): void {
+    const dir = v2.lenSq(s.dir) <= 1e-8 ? v2.make(1, 0) : v2.norm(s.dir);
+    const right = v2.perp(dir);
+    const count = 5;
+    const spacing = 58;
+    const impact = this.rocketImpact * 1.25;
+
+    for (let i = 0; i < count; i++) {
+      const along = (i - (count - 1) / 2) * spacing;
+      const side = randRange(-36, 36);
+      const at = v2.add(s.pos, v2.add(v2.mul(dir, along), v2.mul(right, side)));
+      this.explodeRocket(at, dir, nowMs, impact);
+    }
+  }
+
+  private drawDroneStrikes(ctx: CanvasRenderingContext2D): void {
+    if (this.droneStrikes.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (const s of this.droneStrikes) {
+      const t = clamp(s.t / 0.95, 0, 1);
+      const a = (1 - t) * 0.75;
+      const r = 26 + 18 * t;
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = "rgba(255, 80, 80, 1)";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(s.pos.x, s.pos.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(s.pos.x - r, s.pos.y);
+      ctx.lineTo(s.pos.x - r * 0.55, s.pos.y);
+      ctx.moveTo(s.pos.x + r, s.pos.y);
+      ctx.lineTo(s.pos.x + r * 0.55, s.pos.y);
+      ctx.moveTo(s.pos.x, s.pos.y - r);
+      ctx.lineTo(s.pos.x, s.pos.y - r * 0.55);
+      ctx.moveTo(s.pos.x, s.pos.y + r);
+      ctx.lineTo(s.pos.x, s.pos.y + r * 0.55);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 

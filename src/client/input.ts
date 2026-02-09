@@ -3,6 +3,7 @@ export type Key =
   | "KeyA"
   | "KeyS"
   | "KeyD"
+  | "KeyE"
   | "Space"
   | "Escape";
 
@@ -45,6 +46,7 @@ export class Input {
     init("KeyA");
     init("KeyS");
     init("KeyD");
+    init("KeyE");
     init("Space");
     init("Escape");
 

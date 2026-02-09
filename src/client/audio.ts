@@ -1,6 +1,7 @@
 export type AudioSettings = {
   muted: boolean;
   intensity: number; // 0..1
+  volume: number; // 0..1
 };
 
 type Note = { step: number; midi: number; durSteps: number; vel: number };
@@ -8,6 +9,7 @@ type Note = { step: number; midi: number; durSteps: number; vel: number };
 const DEFAULT_SETTINGS: AudioSettings = {
   muted: false,
   intensity: 0.6,
+  volume: 0.7,
 };
 
 function midiToHz(midi: number): number {
@@ -69,6 +71,7 @@ export class AudioManager {
       ...this.settings,
       ...next,
       intensity: next.intensity == null ? this.settings.intensity : clamp(next.intensity, 0, 1),
+      volume: next.volume == null ? this.settings.volume : clamp(next.volume, 0, 1),
     };
 
     this.applyMix();
@@ -186,7 +189,8 @@ export class AudioManager {
     if (this.fileEl && this.usingFile) {
       const intensity = this.settings.intensity;
       const baseVol = 0.35;
-      this.fileEl.volume = this.settings.muted ? 0 : baseVol * (0.25 + intensity * 0.75);
+      this.fileEl.volume =
+        this.settings.muted ? 0 : baseVol * this.settings.volume * (0.25 + intensity * 0.75);
       this.fileEl.playbackRate = 0.9 + intensity * 0.25;
       if (!this.settings.muted) {
         // keep it running if it was paused by the browser
@@ -205,7 +209,11 @@ export class AudioManager {
     const intensity = this.settings.intensity;
 
     const base = 0.22;
-    master.gain.setTargetAtTime(this.settings.muted ? 0 : base, ctx.currentTime, 0.03);
+    master.gain.setTargetAtTime(
+      this.settings.muted ? 0 : base * this.settings.volume,
+      ctx.currentTime,
+      0.03,
+    );
 
     const cutoff = 650 + intensity * 1750; // 650..2400
     filter.frequency.setTargetAtTime(cutoff, ctx.currentTime, 0.05);

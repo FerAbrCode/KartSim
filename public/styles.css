@@ -200,6 +200,17 @@ button:hover {
   min-width: 0;
 }
 
+.rangeEnds {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  color: var(--muted);
+  margin-top: -6px;
+  user-select: none;
+}
+
 .range input[type="range"] {
   width: 100%;
   max-width: 260px;
@@ -255,4 +266,22 @@ button:hover {
 #leaderboard li {
   padding: 6px 0;
   font-variant-numeric: tabular-nums;
+}
+
+.leaderRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.leaderFlag {
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  vertical-align: -3px;
+}
+
+.leaderTrophy {
+  margin-left: 6px;
+  opacity: 0.95;
 }

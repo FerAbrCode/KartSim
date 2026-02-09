@@ -37,11 +37,13 @@
           <div class="musicRow">
             <label class="range">
               <span>Reload</span>
-              <input id="rpgReload" type="range" min="200" max="1200" value="520" />
+              <input id="rpgReload" type="range" min="0" max="100" value="55" />
+              <div class="rangeEnds" aria-hidden="true"><span>Low</span><span>High</span></div>
             </label>
             <label class="range">
               <span>Impact</span>
-              <input id="rpgImpact" type="range" min="120" max="420" value="260" />
+              <input id="rpgImpact" type="range" min="0" max="100" value="50" />
+              <div class="rangeEnds" aria-hidden="true"><span>Low</span><span>High</span></div>
             </label>
           </div>
         </div>
@@ -57,6 +59,10 @@
               <span>Intensity</span>
               <input id="musicIntensity" type="range" min="0" max="100" value="60" />
             </label>
+            <label class="range">
+              <span>Volume</span>
+              <input id="musicVolume" type="range" min="0" max="100" value="70" />
+            </label>
           </div>
         </div>
 
@@ -66,7 +72,7 @@
           <div><b>Controls</b></div>
           <div>W/S: forward/back · A/D: steer</div>
           <div>Space tap: jump · Space hold: drift (tighter turns)</div>
-          <div>Mouse click: fire RPG at cursor · Esc: pause</div>
+          <div>Mouse click: fire RPG at cursor · E: drone strike · Esc: pause</div>
         </div>
       </div>
 
@@ -94,8 +100,12 @@
           <span>Mute music</span>
         </label>
         <label class="range pauseRange">
-          <span>Sound</span>
+          <span>Intensity</span>
           <input id="pauseIntensity" type="range" min="0" max="100" value="60" />
+        </label>
+        <label class="range pauseRange">
+          <span>Volume</span>
+          <input id="pauseVolume" type="range" min="0" max="100" value="70" />
         </label>
         <div class="pauseActions">
           <button id="resumeBtn" class="primary">Resume</button>

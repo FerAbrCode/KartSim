@@ -18,6 +18,7 @@ export type LeaderboardEntry = {
 export type MusicSettings = {
   muted: boolean;
   intensity: number; // 0..1
+  volume: number; // 0..1
 };
 
 const FLAGS: { code: string; label: string }[] = [
@@ -60,6 +61,7 @@ export class UI {
   private readonly elExit = document.getElementById("exitBtn") as HTMLButtonElement;
   private readonly elPauseMute = document.getElementById("pauseMute") as HTMLInputElement;
   private readonly elPauseIntensity = document.getElementById("pauseIntensity") as HTMLInputElement;
+  private readonly elPauseVolume = document.getElementById("pauseVolume") as HTMLInputElement;
 
   private readonly elLap = document.getElementById("lapText") as HTMLDivElement;
   private readonly elPos = document.getElementById("posText") as HTMLDivElement;
@@ -80,6 +82,7 @@ export class UI {
   private readonly elMusicIntensity = document.getElementById(
     "musicIntensity",
   ) as HTMLInputElement;
+  private readonly elMusicVolume = document.getElementById("musicVolume") as HTMLInputElement;
   private readonly elRpgReload = document.getElementById("rpgReload") as HTMLInputElement;
   private readonly elRpgImpact = document.getElementById("rpgImpact") as HTMLInputElement;
 
@@ -119,8 +122,10 @@ export class UI {
     const saved = this.loadMusicSettings();
     this.elMusicMute.checked = saved.muted;
     this.elMusicIntensity.value = String(Math.round(saved.intensity * 100));
+    this.elMusicVolume.value = String(Math.round(saved.volume * 100));
     this.elPauseMute.checked = saved.muted;
     this.elPauseIntensity.value = String(Math.round(saved.intensity * 100));
+    this.elPauseVolume.value = String(Math.round(saved.volume * 100));
 
     const emit = () => {
       const s = this.getMusicSettings();
@@ -129,7 +134,7 @@ export class UI {
     };
     // rpg settings (persisted)
     const rpg = this.loadRpgSettings();
-    this.elRpgReload.value = String(rpg.reloadMs);
+    this.elRpgReload.value = String(rpg.reload);
     this.elRpgImpact.value = String(rpg.impact);
 
     const emitRpg = () => {
@@ -149,9 +154,24 @@ export class UI {
       }
     };
 
+    const syncVolumeUi = (value: string) => {
+      if (this.syncingMusicUi) return;
+      this.syncingMusicUi = true;
+      try {
+        if (this.elMusicVolume.value !== value) this.elMusicVolume.value = value;
+        if (this.elPauseVolume.value !== value) this.elPauseVolume.value = value;
+      } finally {
+        this.syncingMusicUi = false;
+      }
+    };
+
     this.elMusicMute.addEventListener("change", emit);
     this.elMusicIntensity.addEventListener("input", () => {
       syncIntensityUi(this.elMusicIntensity.value);
+      emit();
+    });
+    this.elMusicVolume.addEventListener("input", () => {
+      syncVolumeUi(this.elMusicVolume.value);
       emit();
     });
 
@@ -161,6 +181,11 @@ export class UI {
 
     this.elPauseIntensity.addEventListener("input", () => {
       syncIntensityUi(this.elPauseIntensity.value);
+      emit();
+    });
+
+    this.elPauseVolume.addEventListener("input", () => {
+      syncVolumeUi(this.elPauseVolume.value);
       emit();
     });
 
@@ -232,20 +257,22 @@ export class UI {
   getMusicSettings(): MusicSettings {
     const muted = this.elMusicMute.checked;
     const intensity = Math.max(0, Math.min(1, Number(this.elMusicIntensity.value) / 100));
-    return { muted, intensity };
+    const volume = Math.max(0, Math.min(1, Number(this.elMusicVolume.value) / 100));
+    return { muted, intensity, volume };
   }
 
   private loadMusicSettings(): MusicSettings {
     try {
       const raw = localStorage.getItem("kartsim:music");
-      if (!raw) return { muted: false, intensity: 0.6 };
+      if (!raw) return { muted: false, intensity: 0.6, volume: 0.7 };
       const v = JSON.parse(raw) as Partial<MusicSettings>;
       return {
         muted: Boolean(v.muted),
         intensity: typeof v.intensity === "number" ? Math.max(0, Math.min(1, v.intensity)) : 0.6,
+        volume: typeof v.volume === "number" ? Math.max(0, Math.min(1, v.volume)) : 0.7,
       };
     } catch {
-      return { muted: false, intensity: 0.6 };
+      return { muted: false, intensity: 0.6, volume: 0.7 };
     }
   }
 
@@ -288,9 +315,52 @@ export class UI {
     this.elPause.classList.add("hidden");
 
     this.elLeaderboard.innerHTML = "";
-    for (const e of entries) {
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
       const li = document.createElement("li");
-      li.textContent = `${e.flag} ${e.name} — ${formatTime(e.timeMs)}`;
+
+      const row = document.createElement("span");
+      row.className = "leaderRow";
+
+      const url = flagToTwemojiUrl(e.flag);
+      const fallbackUrl = flagToTwemojiFallbackUrl(e.flag);
+
+      if (url) {
+        const img = document.createElement("img");
+        img.className = "leaderFlag";
+        img.alt = e.flag;
+        img.onload = () => {
+          /* ok */
+        };
+        img.onerror = () => {
+          if (fallbackUrl && img.src !== fallbackUrl) {
+            img.src = fallbackUrl;
+          }
+        };
+        img.src = url;
+        row.appendChild(img);
+      } else {
+        const t = document.createElement("span");
+        t.textContent = e.flag;
+        row.appendChild(t);
+      }
+
+      const name = document.createElement("span");
+      name.textContent = e.name;
+      row.appendChild(name);
+
+      if (i === 0) {
+        const trophy = document.createElement("span");
+        trophy.className = "leaderTrophy";
+        trophy.textContent = "🏆";
+        row.appendChild(trophy);
+      }
+
+      const time = document.createElement("span");
+      time.textContent = `— ${formatTime(e.timeMs)}`;
+      row.appendChild(time);
+
+      li.appendChild(row);
       this.elLeaderboard.appendChild(li);
     }
   }
@@ -301,6 +371,8 @@ export class UI {
     const s = this.getMusicSettings();
     const v = String(Math.round(s.intensity * 100));
     if (this.elPauseIntensity.value !== v) this.elPauseIntensity.value = v;
+    const vv = String(Math.round(s.volume * 100));
+    if (this.elPauseVolume.value !== vv) this.elPauseVolume.value = vv;
     this.elPause.classList.remove("hidden");
   }
 
@@ -313,32 +385,104 @@ export class UI {
     const flag = this.elFlag.value;
     const trackId = this.elMap.value;
     const rpg = this.getRpgSettings();
-    return { name: name.slice(0, 16), flag, trackId, rpgReloadMs: rpg.reloadMs, rpgImpact: rpg.impact };
+    return { name: name.slice(0, 16), flag, trackId, rpgReloadMs: rpg.reloadMs, rpgImpact: rpg.impactValue };
   }
 
-  private getRpgSettings(): { reloadMs: number; impact: number } {
-    const reloadMs = Math.max(200, Math.min(1200, Number(this.elRpgReload.value) || 520));
-    const impact = Math.max(120, Math.min(420, Number(this.elRpgImpact.value) || 260));
-    return { reloadMs, impact };
+  private reloadMsFromSlider(v: number): number {
+    // Inverted: higher slider => smaller reload time.
+    // More sensitive at extremes using a curve.
+    const t = Math.max(0, Math.min(1, v / 100));
+    const minMs = 140;
+    const maxMs = 2000;
+    const curved = Math.pow(t, 1.8);
+    return Math.round(maxMs - curved * (maxMs - minMs));
   }
 
-  private loadRpgSettings(): { reloadMs: number; impact: number } {
+  private impactFromSlider(v: number): number {
+    const t = Math.max(0, Math.min(1, v / 100));
+    const minI = 120;
+    const maxI = 460;
+    const curved = Math.pow(t, 1.2);
+    return Math.round(minI + curved * (maxI - minI));
+  }
+
+  private getRpgSettings(): { reload: number; impact: number; reloadMs: number; impactValue: number } {
+    const reload = Math.max(0, Math.min(100, Number(this.elRpgReload.value) || 55));
+    const impact = Math.max(0, Math.min(100, Number(this.elRpgImpact.value) || 50));
+    return {
+      reload,
+      impact,
+      reloadMs: this.reloadMsFromSlider(reload),
+      impactValue: this.impactFromSlider(impact),
+    };
+  }
+
+  private loadRpgSettings(): { reload: number; impact: number } {
     try {
       const raw = localStorage.getItem("kartsim:rpg");
-      if (!raw) return { reloadMs: 520, impact: 260 };
-      const v = JSON.parse(raw) as Partial<{ reloadMs: number; impact: number }>;
-      return {
-        reloadMs: typeof v.reloadMs === "number" ? Math.max(200, Math.min(1200, v.reloadMs)) : 520,
-        impact: typeof v.impact === "number" ? Math.max(120, Math.min(420, v.impact)) : 260,
-      };
+      if (!raw) return { reload: 55, impact: 50 };
+
+      const v = JSON.parse(raw) as Partial<{ reload: number; impact: number; reloadMs: number }>;
+      if (
+        typeof v.reload === "number" &&
+        typeof v.impact === "number" &&
+        v.reload >= 0 &&
+        v.reload <= 100 &&
+        v.impact >= 0 &&
+        v.impact <= 100
+      ) {
+        return {
+          reload: Math.max(0, Math.min(100, v.reload)),
+          impact: Math.max(0, Math.min(100, v.impact)),
+        };
+      }
+
+      // migration: old schema stored reloadMs/impactValue
+      const oldReloadMs = typeof (v as any).reloadMs === "number" ? (v as any).reloadMs : 520;
+      const oldImpact = typeof (v as any).impact === "number" ? (v as any).impact : 260;
+
+      const bestReload = this.approxReloadSliderFromMs(oldReloadMs);
+      const bestImpact = this.approxImpactSliderFromValue(oldImpact);
+      return { reload: bestReload, impact: bestImpact };
     } catch {
-      return { reloadMs: 520, impact: 260 };
+      return { reload: 55, impact: 50 };
     }
   }
 
-  private saveRpgSettings(s: { reloadMs: number; impact: number }): void {
+  private approxReloadSliderFromMs(ms: number): number {
+    let best = 55;
+    let bestErr = Number.POSITIVE_INFINITY;
+    for (let v = 0; v <= 100; v++) {
+      const r = this.reloadMsFromSlider(v);
+      const err = Math.abs(r - ms);
+      if (err < bestErr) {
+        bestErr = err;
+        best = v;
+      }
+    }
+    return best;
+  }
+
+  private approxImpactSliderFromValue(val: number): number {
+    let best = 50;
+    let bestErr = Number.POSITIVE_INFINITY;
+    for (let v = 0; v <= 100; v++) {
+      const r = this.impactFromSlider(v);
+      const err = Math.abs(r - val);
+      if (err < bestErr) {
+        bestErr = err;
+        best = v;
+      }
+    }
+    return best;
+  }
+
+  private saveRpgSettings(s: { reload: number; impact: number; reloadMs: number; impactValue: number }): void {
     try {
-      localStorage.setItem("kartsim:rpg", JSON.stringify(s));
+      localStorage.setItem(
+        "kartsim:rpg",
+        JSON.stringify({ reload: s.reload, impact: s.impact, reloadMs: s.reloadMs, impactValue: s.impactValue }),
+      );
     } catch {
       // ignore
     }
