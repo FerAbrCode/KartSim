@@ -51,11 +51,25 @@ type Rocket = {
   radius: number;
 };
 
-type DroneStrike = {
+type DroneMissile = {
   pos: Vec2;
-  t: number;
+  vel: Vec2;
+  target: Vec2;
   dir: Vec2;
-  fired: boolean;
+  life: number;
+};
+
+type Crater = {
+  pos: Vec2;
+  life: number;
+  maxLife: number;
+  r: number;
+};
+
+type FirePatch = {
+  pos: Vec2;
+  life: number;
+  maxLife: number;
 };
 
 export class Game {
@@ -85,9 +99,12 @@ export class Game {
   private sparks: Spark[] = [];
   private shockwaves: Shockwave[] = [];
 
-  private droneStrikes: DroneStrike[] = [];
+  private droneMissiles: DroneMissile[] = [];
+  private craters: Crater[] = [];
+  private fires: FirePatch[] = [];
   private lastDroneStrikeMs = -1e9;
   private readonly droneCooldownMs = 9000;
+  private readonly botDroneNextMs = new Map<string, number>();
 
   private shake = 0;
 
@@ -178,8 +195,11 @@ export class Game {
     this.rockets = [];
     this.sparks = [];
     this.shockwaves = [];
-    this.droneStrikes = [];
+    this.droneMissiles = [];
+    this.craters = [];
+    this.fires = [];
     this.lastDroneStrikeMs = -1e9;
+    this.botDroneNextMs.clear();
     this.rocketCooldownMs = sel.rpgReloadMs;
     this.rocketImpact = sel.rpgImpact;
     this.shake = 0;
@@ -244,6 +264,11 @@ export class Game {
       this.flagIcons.preload(kart.flag);
 
       if (id !== this.playerId) this.bots.set(id, new BotController());
+
+      if (id !== this.playerId) {
+        // first drone call sometime after the start
+        this.botDroneNextMs.set(id, nowMs + 4000 + Math.random() * 7000);
+      }
     }
 
     this.phase = "racing";
@@ -301,7 +326,9 @@ export class Game {
       this.updateSmoke(dt);
       this.updateSparks(dt);
       this.updateShockwaves(dt);
-      this.updateDroneStrikes(dt, nowMs);
+      this.updateDroneMissiles(dt, nowMs);
+      this.updateFirePatches(dt);
+      this.updateCraters(dt);
 
       // camera shake decay
       this.shake = Math.max(0, this.shake - dt * 2.6);
@@ -330,6 +357,22 @@ export class Game {
         } else {
           // if nobody is reasonably in front, hold fire a bit
           k.nextShotMs = nowMs + this.rocketCooldownMs * (0.4 + Math.random() * 0.8);
+        }
+      }
+
+      // Drone strike (bots)
+      for (const k of this.karts) {
+        if (k.id === this.playerId) continue;
+        if (k.finished) continue;
+        const nextMs = this.botDroneNextMs.get(k.id) ?? Number.POSITIVE_INFINITY;
+        if (nowMs < nextMs) continue;
+
+        const target = this.pickBotDroneTarget(k);
+        if (target) {
+          this.spawnDroneMissile(target.pos, nowMs);
+          this.botDroneNextMs.set(k.id, nowMs + this.droneCooldownMs * (0.85 + Math.random() * 0.7));
+        } else {
+          this.botDroneNextMs.set(k.id, nowMs + 1500 + Math.random() * 2200);
         }
       }
 
@@ -445,7 +488,10 @@ export class Game {
 
     this.drawTrack(ctx);
     this.drawStartLine(ctx);
-    this.drawDroneStrikes(ctx);
+    this.drawCraters(ctx);
+    this.drawFirePatches(ctx);
+    this.drawDroneWarnings(ctx);
+    this.drawDroneMissiles(ctx);
 
     this.drawSkids(ctx);
     this.drawShockwaves(ctx);
@@ -477,65 +523,233 @@ export class Game {
     }
 
     this.lastDroneStrikeMs = nowMs;
-    this.droneStrikes.push({ pos: target, t: 0, dir, fired: false });
-    this.ui.toast("Drone strike inbound!", 0.85);
+    this.spawnDroneMissile(target, nowMs);
+    this.ui.toast("Drone missile inbound!", 0.85);
   }
 
-  private updateDroneStrikes(dt: number, nowMs: number): void {
-    if (this.droneStrikes.length === 0) return;
+  private spawnDroneMissile(target: Vec2, nowMs: number): void {
+    // random approach direction, but guaranteed to converge to target
+    const ang = Math.random() * Math.PI * 2;
+    const approach = v2.make(Math.cos(ang), Math.sin(ang));
+    const dist = 1150 + Math.random() * 900;
+    const start = v2.add(target, v2.mul(approach, dist));
+    const dir = v2.norm(v2.sub(target, start));
+    const speed = 2550 + Math.random() * 550;
+    const vel = v2.mul(dir, speed);
 
-    const keep: DroneStrike[] = [];
-    for (const s of this.droneStrikes) {
-      s.t += dt;
-      if (!s.fired && s.t >= 0.95) {
-        s.fired = true;
-        this.fireDroneStrike(s, nowMs);
+    // keep a short-ish lifetime so it must reach target quickly
+    const life = Math.min(1.35, dist / speed + 0.35);
+    this.droneMissiles.push({ pos: start, vel, target: { ...target }, dir, life });
+
+    // small pre-impact warning shake/whistle via visuals only
+    void nowMs;
+  }
+
+  private pickBotDroneTarget(bot: Kart): Kart | null {
+    // Prefer the player if in front-ish and not finished
+    const player = this.karts.find((k) => k.id === this.playerId);
+    if (player && !player.finished) {
+      const to = v2.sub(player.pos, bot.pos);
+      if (v2.len(to) < 980) return player;
+    }
+    // Otherwise, strike at someone ahead
+    return this.pickBotRocketTarget(bot);
+  }
+
+  private updateDroneMissiles(dt: number, nowMs: number): void {
+    if (this.droneMissiles.length === 0) return;
+
+    const next: DroneMissile[] = [];
+    for (const m of this.droneMissiles) {
+      m.life -= dt;
+
+      const prev = { ...m.pos };
+      m.pos = v2.add(m.pos, v2.mul(m.vel, dt));
+
+      // smoke trail
+      if (Math.random() < Math.min(1, dt * 34)) {
+        const back = v2.norm(v2.mul(m.vel, -1));
+        const at = v2.add(m.pos, v2.mul(back, 10));
+        this.puffSmoke(at, 2);
       }
-      if (s.t < 1.35) keep.push(s);
+
+      // bright sparks occasionally
+      if (Math.random() < Math.min(0.8, dt * 10)) {
+        const back = v2.norm(v2.mul(m.vel, -1));
+        const at = v2.add(m.pos, v2.mul(back, 6));
+        this.sparks.push({
+          pos: { ...at },
+          vel: v2.add(v2.mul(back, 420 + Math.random() * 260), v2.make((Math.random() - 0.5) * 140, (Math.random() - 0.5) * 140)),
+          life: 0.16 + Math.random() * 0.18,
+          maxLife: 0.34,
+          size: 1.8 + Math.random() * 2.2,
+          color: "rgba(255, 210, 120, 1)",
+        });
+      }
+
+      // impact when crossing target
+      const toT = v2.sub(m.target, prev);
+      const toT2 = v2.sub(m.target, m.pos);
+      const dist2 = v2.len(toT2);
+      const crossed = v2.dot(toT, toT2) <= 0;
+      if (dist2 < 18 || crossed || m.life <= 0) {
+        this.onDroneImpact(m.target, m.dir, nowMs);
+        continue;
+      }
+
+      next.push(m);
     }
-    this.droneStrikes = keep;
+
+    this.droneMissiles = next;
   }
 
-  private fireDroneStrike(s: DroneStrike, nowMs: number): void {
-    const dir = v2.lenSq(s.dir) <= 1e-8 ? v2.make(1, 0) : v2.norm(s.dir);
-    const right = v2.perp(dir);
-    const count = 5;
-    const spacing = 58;
-    const impact = this.rocketImpact * 1.25;
+  private onDroneImpact(at: Vec2, dir: Vec2, nowMs: number): void {
+    const impact = this.rocketImpact * 1.85;
+    this.explodeRocket(at, dir, nowMs, impact);
 
-    for (let i = 0; i < count; i++) {
-      const along = (i - (count - 1) / 2) * spacing;
-      const side = randRange(-36, 36);
-      const at = v2.add(s.pos, v2.add(v2.mul(dir, along), v2.mul(right, side)));
-      this.explodeRocket(at, dir, nowMs, impact);
+    // crater + fire
+    const r = 46 + this.rocketImpact * 0.085;
+    this.craters.push({ pos: { ...at }, life: 42, maxLife: 42, r });
+    this.fires.push({ pos: { ...at }, life: 8.5, maxLife: 8.5 });
+    // secondary burning patches
+    for (let i = 0; i < 3; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = 18 + Math.random() * 22;
+      this.fires.push({ pos: v2.add(at, v2.make(Math.cos(a) * d, Math.sin(a) * d)), life: 6.0, maxLife: 6.0 });
     }
+
+    // extra smoke plume
+    this.puffSmoke(at, 16);
+
+    // cap decals
+    if (this.craters.length > 55) this.craters.splice(0, this.craters.length - 55);
+    if (this.fires.length > 36) this.fires.splice(0, this.fires.length - 36);
   }
 
-  private drawDroneStrikes(ctx: CanvasRenderingContext2D): void {
-    if (this.droneStrikes.length === 0) return;
+  private updateCraters(dt: number): void {
+    if (this.craters.length === 0) return;
+    for (const c of this.craters) c.life -= dt;
+    this.craters = this.craters.filter((c) => c.life > 0);
+  }
+
+  private updateFirePatches(dt: number): void {
+    if (this.fires.length === 0) return;
+    for (const f of this.fires) {
+      f.life -= dt;
+      // emit smoke while burning
+      if (Math.random() < Math.min(1, dt * 26)) {
+        const vel = v2.make((Math.random() - 0.5) * 40, -55 - Math.random() * 55);
+        const maxLife = 1.0 + Math.random() * 1.25;
+        const size = 10 + Math.random() * 12;
+        const pos = v2.add(f.pos, v2.make((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14));
+        this.smoke.push({ pos, vel, life: maxLife, maxLife, size });
+      }
+    }
+    this.fires = this.fires.filter((f) => f.life > 0);
+  }
+
+  private drawCraters(ctx: CanvasRenderingContext2D): void {
+    if (this.craters.length === 0) return;
+    ctx.save();
+    for (const c of this.craters) {
+      const t = clamp(c.life / c.maxLife, 0, 1);
+      const a = 0.85 * t;
+      const r = c.r;
+      const g = ctx.createRadialGradient(c.pos.x, c.pos.y, r * 0.15, c.pos.x, c.pos.y, r);
+      g.addColorStop(0, `rgba(0,0,0,${0.75 * a})`);
+      g.addColorStop(1, `rgba(0,0,0,${0.05 * a})`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(c.pos.x, c.pos.y, r, 0, Math.PI * 2);
+      ctx.fill();
+
+      // scorched ring
+      ctx.globalAlpha = 0.48 * a;
+      ctx.strokeStyle = "rgba(30, 18, 14, 1)";
+      ctx.lineWidth = 3.25;
+      ctx.beginPath();
+      ctx.arc(c.pos.x, c.pos.y, r * 0.82, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  private drawFirePatches(ctx: CanvasRenderingContext2D): void {
+    if (this.fires.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    for (const f of this.fires) {
+      const t = clamp(f.life / f.maxLife, 0, 1);
+      const flick = 0.75 + 0.35 * Math.sin(performance.now() * 0.03 + f.pos.x * 0.01);
+      const a = 0.85 * t;
+
+      const r = 18 + 14 * (1 - t);
+      const glow = ctx.createRadialGradient(f.pos.x, f.pos.y, 2, f.pos.x, f.pos.y, r * 2.2);
+      glow.addColorStop(0, `rgba(255, 200, 90, ${0.5 * a})`);
+      glow.addColorStop(1, `rgba(255, 80, 30, 0)`);
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(f.pos.x, f.pos.y, r * 2.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "rgba(255, 170, 60, 0.95)";
+      ctx.beginPath();
+      ctx.ellipse(f.pos.x, f.pos.y, r * 0.9 * flick, r * 0.6 * flick, 0, 0, Math.PI * 2);
+      ctx.ellipse(f.pos.x + (Math.random() - 0.5) * 3, f.pos.y - 8, r * 0.55 * flick, r * 0.9 * flick, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255, 70, 35, 0.9)";
+      ctx.beginPath();
+      ctx.ellipse(f.pos.x, f.pos.y, r * 0.65 * flick, r * 0.42 * flick, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  private drawDroneWarnings(ctx: CanvasRenderingContext2D): void {
+    if (this.droneMissiles.length === 0) return;
     ctx.save();
     ctx.globalCompositeOperation = "screen";
-    for (const s of this.droneStrikes) {
-      const t = clamp(s.t / 0.95, 0, 1);
-      const a = (1 - t) * 0.75;
-      const r = 26 + 18 * t;
+    for (const m of this.droneMissiles) {
+      const t = clamp(1 - m.life / 1.35, 0, 1);
+      const a = 0.45 + 0.4 * (1 - t);
+      const r = 26 + 10 * t;
       ctx.globalAlpha = a;
       ctx.strokeStyle = "rgba(255, 80, 80, 1)";
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = 2.25;
       ctx.beginPath();
-      ctx.arc(s.pos.x, s.pos.y, r, 0, Math.PI * 2);
+      ctx.arc(m.target.x, m.target.y, r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  private drawDroneMissiles(ctx: CanvasRenderingContext2D): void {
+    if (this.droneMissiles.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineCap = "round";
+    for (const m of this.droneMissiles) {
+      const d = v2.norm(m.vel);
+      const tail = v2.add(m.pos, v2.mul(d, -28));
+      ctx.globalAlpha = 0.9;
+      ctx.strokeStyle = "rgba(255, 230, 180, 1)";
+      ctx.lineWidth = 4.5;
+      ctx.beginPath();
+      ctx.moveTo(tail.x, tail.y);
+      ctx.lineTo(m.pos.x, m.pos.y);
       ctx.stroke();
 
-      ctx.lineWidth = 2;
+      ctx.globalAlpha = 0.75;
+      ctx.strokeStyle = "rgba(255, 120, 60, 1)";
+      ctx.lineWidth = 2.0;
       ctx.beginPath();
-      ctx.moveTo(s.pos.x - r, s.pos.y);
-      ctx.lineTo(s.pos.x - r * 0.55, s.pos.y);
-      ctx.moveTo(s.pos.x + r, s.pos.y);
-      ctx.lineTo(s.pos.x + r * 0.55, s.pos.y);
-      ctx.moveTo(s.pos.x, s.pos.y - r);
-      ctx.lineTo(s.pos.x, s.pos.y - r * 0.55);
-      ctx.moveTo(s.pos.x, s.pos.y + r);
-      ctx.lineTo(s.pos.x, s.pos.y + r * 0.55);
+      ctx.moveTo(tail.x, tail.y);
+      ctx.lineTo(m.pos.x, m.pos.y);
       ctx.stroke();
     }
     ctx.restore();

@@ -1,6 +1,6 @@
 export type AudioSettings = {
   muted: boolean;
-  intensity: number; // 0..1
+  intensity: number; // 0..1 (music speed)
   volume: number; // 0..1
 };
 
@@ -173,8 +173,8 @@ export class AudioManager {
     const ctx = this.ctx;
     if (!ctx || ctx.state !== "running") return;
 
-    const intensity = this.settings.intensity;
-    const bpm = 92 + intensity * 48; // 92..140
+    const speed = this.settings.intensity;
+    const bpm = 92 + speed * 54; // 92..146
     const stepDur = (60 / bpm) / 4; // 16th note
 
     const scheduleAhead = 0.18;
@@ -187,11 +187,11 @@ export class AudioManager {
 
   private applyMix(): void {
     if (this.fileEl && this.usingFile) {
-      const intensity = this.settings.intensity;
       const baseVol = 0.35;
       this.fileEl.volume =
-        this.settings.muted ? 0 : baseVol * this.settings.volume * (0.25 + intensity * 0.75);
-      this.fileEl.playbackRate = 0.9 + intensity * 0.25;
+        this.settings.muted ? 0 : baseVol * this.settings.volume;
+      const speed = this.settings.intensity;
+      this.fileEl.playbackRate = 0.85 + speed * 0.45;
       if (!this.settings.muted) {
         // keep it running if it was paused by the browser
         void this.fileEl.play().catch(() => {
@@ -206,8 +206,6 @@ export class AudioManager {
     const filter = this.filter;
     if (!ctx || !master || !filter) return;
 
-    const intensity = this.settings.intensity;
-
     const base = 0.22;
     master.gain.setTargetAtTime(
       this.settings.muted ? 0 : base * this.settings.volume,
@@ -215,8 +213,8 @@ export class AudioManager {
       0.03,
     );
 
-    const cutoff = 650 + intensity * 1750; // 650..2400
-    filter.frequency.setTargetAtTime(cutoff, ctx.currentTime, 0.05);
+    // Keep synth tone stable; speed only affects tempo.
+    filter.frequency.setTargetAtTime(1200, ctx.currentTime, 0.05);
   }
 
   private scheduleStep(step: number, t: number, stepDur: number): void {
@@ -224,28 +222,26 @@ export class AudioManager {
     const filter = this.filter;
     if (!ctx || !filter) return;
 
-    const intensity = this.settings.intensity;
-
     // bass
     for (const n of this.bass) {
       if (n.step !== step) continue;
-      this.pluck(filter, t, midiToHz(n.midi), stepDur * n.durSteps, 0.14 + intensity * 0.12, n.vel);
+      this.pluck(filter, t, midiToHz(n.midi), stepDur * n.durSteps, 0.18, n.vel);
     }
 
     // lead
     for (const n of this.lead) {
       if (n.step !== step) continue;
-      this.sineLead(filter, t, midiToHz(n.midi), stepDur * n.durSteps, 0.06 + intensity * 0.08, n.vel);
+      this.sineLead(filter, t, midiToHz(n.midi), stepDur * n.durSteps, 0.085, n.vel);
     }
 
     // kick
     if (this.kickSteps.has(step)) {
-      this.kick(filter, t, 0.11, 0.9 * (0.6 + intensity * 0.6));
+      this.kick(filter, t, 0.11, 0.92);
     }
 
     // hat
     if (this.hatSteps.has(step)) {
-      this.hat(filter, t, 0.05, 0.4 * (0.4 + intensity * 0.9));
+      this.hat(filter, t, 0.05, 0.46);
     }
   }
 
