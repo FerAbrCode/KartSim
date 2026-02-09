@@ -349,16 +349,16 @@ export class UI {
       name.textContent = e.name;
       row.appendChild(name);
 
+      const time = document.createElement("span");
+      time.textContent = `— ${formatTime(e.timeMs)}`;
+      row.appendChild(time);
+
       if (i === 0) {
         const trophy = document.createElement("span");
         trophy.className = "leaderTrophy";
         trophy.textContent = "🏆";
         row.appendChild(trophy);
       }
-
-      const time = document.createElement("span");
-      time.textContent = `— ${formatTime(e.timeMs)}`;
-      row.appendChild(time);
 
       li.appendChild(row);
       this.elLeaderboard.appendChild(li);
